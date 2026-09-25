@@ -1,6 +1,7 @@
 """邮件原始头部解析包。"""
 
 from .arc import check_arc_chain
+from .authresults import analyze_auth_results
 from .batch import BATCH_DELIMITER, batch_delay_analysis, split_batch_headers
 from .compare import compare_headers
 from .dkim import audit_dkim_coverage
@@ -10,6 +11,7 @@ from .trust import analyze_trust_boundary, parse_trusted_hosts
 
 __all__ = [
     "BATCH_DELIMITER",
+    "analyze_auth_results",
     "analyze_headers",
     "analyze_trust_boundary",
     "audit_dkim_coverage",

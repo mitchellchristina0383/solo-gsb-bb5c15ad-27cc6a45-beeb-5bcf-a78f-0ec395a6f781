@@ -231,4 +231,60 @@ edge.internal.corp
 GW2.Internal.Corp.
 """
 
+# 认证结果来源示例：与可信边界示例同一条链路（本组织名单仍为
+# edge.internal.corp / gw2.internal.corp，可信前缀为前两跳，
+# 边界在第 3 跳 relay2.partner.example），演示六条 Authentication-Results：
+# - 第 1 条（edge.internal.corp）：归属第 1 跳（可信，authserv-id 一致），
+#   本组织声明；含两个 dkim 结果（pass 与 fail），演示重复声明按原文保留；
+# - 第 2 条（mail.example）：同样紧邻第 1 跳（可信），但 authserv-id 与该跳
+#   by 主机不一致 → 身份不符；
+# - 第 3 条（gw2.internal.corp）：归属第 2 跳（可信，一致）→ 本组织声明；
+# - 第 4 条（forged-auth.example）：紧邻第 3 跳（即可信边界）→ 越过边界；
+# - 第 5 条（gw2.internal.corp）：紧邻第 4 跳（边界之后再次命中名单的跳，
+#   不重新接入）→ 越过边界（authserv-id 虽与 by 一致也不可信）；
+# - 第 6 条（edge.external.example）：写在所有 Received 之下 → 无对应跳。
+SAMPLE_HEADERS_AUTHRES = """\
+Authentication-Results: edge.internal.corp;
+\tspf=pass smtp.mailfrom=partner.example;
+\tdkim=pass header.d=partner.example;
+\tdkim=fail header.d=forged.example;
+\tdmarc=pass header.from=partner.example
+Authentication-Results: mail.example;
+\tspf=pass smtp.mailfrom=partner.example;
+\tdmarc=pass header.from=partner.example
+Received: from gw2.internal.corp (gw2.internal.corp [10.20.0.2])
+\tby edge.internal.corp (Postfix) with ESMTPS id A101
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:05:10 +0000
+Authentication-Results: gw2.internal.corp;
+\tspf=softfail smtp.mailfrom=partner.example;
+\tdmarc=none header.from=partner.example
+Received: from gateway.partner.example (gateway.partner.example [203.0.113.55])
+\tby gw2.internal.corp (Postfix) with ESMTP id B202
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:04:30 +0000
+Authentication-Results: forged-auth.example;
+\tspf=pass smtp.mailfrom=partner.example;
+\tdkim=pass header.d=partner.example;
+\tdmarc=pass header.from=partner.example
+Received: from relay1.external.example (relay1.external.example [198.51.100.20])
+\tby relay2.partner.example (Postfix) with ESMTP id C303
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:03:50 +0000
+Authentication-Results: gw2.internal.corp;
+\tspf=pass smtp.mailfrom=partner.example;
+\tdkim=pass header.d=partner.example
+Received: from edge.external.example (edge.external.example [192.0.2.77])
+\tby gw2.internal.corp (Postfix) with ESMTP id D404
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:03:00 +0000
+Received: from sender.external.example (sender.external.example [192.0.2.90])
+\tby edge.external.example (Postfix) with ESMTP id E505
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:02:10 +0000
+Authentication-Results: edge.external.example;
+\tspf=fail smtp.mailfrom=corp.example;
+\tdmarc=fail header.from=corp.example
+Date: Thu, 24 Sep 2026 03:02:00 +0000
+From: Sender <sender@external.example>
+To: User <user@corp.example>
+Subject: Authentication-Results attribution demo
+Message-ID: <authres-demo@external.example>
+"""
+
 
