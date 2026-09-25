@@ -233,6 +233,7 @@
   }
   .hchip.match { border-color: var(--ok); color: var(--ok); }
   .hchip.miss { border-color: var(--error); color: var(--error); }
+  .hchip.caution { border-color: var(--warn); color: var(--warn); }
   .sig-meta { color: var(--muted); font-size: 12.5px; margin: 2px 0 8px; }
   .sig-meta code { font-size: 12px; }
   .dkim-notice {
@@ -370,6 +371,32 @@
       <button class="btn-ghost" type="button" id="fillTrustSample">填入示例</button>
       <button class="btn-ghost" type="button" id="clearTrust">清空</button>
       <span class="hint" style="align-self:center;">也可调用 <code>POST /api/analyze/trust-boundary</code>（JSON：<code>{"headers": "...", "trusted_hosts": ["..."]}</code>）</span>
+    </div>
+  </form>
+
+  <h2 class="section-title">🛡️ 认证结果来源（Authentication-Results 归属）</h2>
+  <p class="subtitle" style="margin-bottom:10px;">
+    粘贴单封邮件的原始头部，并填写<strong>本组织接收服务器主机名名单</strong>（每行一个，
+    忽略大小写与末尾点）。系统复用折行展开与可信边界分析，把每条
+    <code>Authentication-Results</code> 归属到其后<strong>紧邻的
+    <code>Received</code></strong>（两者之间不得有另一条 <code>Received</code>）：
+    仅当该跳属于<strong>自顶端连续可信前缀</strong>、且 <code>authserv-id</code>
+    与该跳 <code>by</code> 主机一致时，才标为<strong>本组织声明</strong>；其余逐条标明
+    <strong>无对应跳 / 越过边界 / 身份不符</strong>。对本组织声明提取
+    <code>spf</code> / <code>dkim</code> / <code>dmarc</code> 结果词，
+    按原文顺序展示并保留重复声明；没有可信前缀时明确显示<strong>无本组织声明</strong>。
+  </p>
+  <form method="post" action="/auth-results" id="authresForm">
+    <textarea name="headers_authres" id="headers_authres" style="min-height:220px;"
+      placeholder="粘贴单封邮件完整原始头部（含 Authentication-Results 与 Received 字段）……">{{ headers_authres or '' }}</textarea>
+    <label class="input-label" for="trusted_hosts_authres">本组织接收服务器主机名名单（每行一个，也可用逗号 / 空格分隔）</label>
+    <textarea name="trusted_hosts_authres" id="trusted_hosts_authres" style="min-height:88px;"
+      placeholder="edge.internal.corp&#10;gw2.internal.corp">{{ trusted_hosts_authres_text or '' }}</textarea>
+    <div class="toolbar">
+      <button class="btn-trust" type="submit">分析认证结果来源</button>
+      <button class="btn-ghost" type="button" id="fillAuthresSample">填入示例</button>
+      <button class="btn-ghost" type="button" id="clearAuthres">清空</button>
+      <span class="hint" style="align-self:center;">也可调用 <code>POST /api/analyze/auth-results</code>（JSON：<code>{"headers": "...", "trusted_hosts": ["..."]}</code>）</span>
     </div>
   </form>
 
@@ -716,6 +743,97 @@
     {% endif %}
   {% endif %}
 
+  {% if authres %}
+    {% if authres.error %}
+      <div class="banner">{{ authres.error }}</div>
+    {% else %}
+      <h2 style="font-size:18px;">认证结果来源（Authentication-Results 归属）结果</h2>
+      <div class="stats">
+        <div class="stat">
+          <div class="num {% if authres.status == 'established' %}ok{% else %}error{% endif %}">{{ authres.status_label }}</div>
+          <div class="label">可信前缀状态</div>
+        </div>
+        <div class="stat"><div class="num ok">{{ authres.trusted_count }}</div><div class="label">连续可信跳（自顶端）</div></div>
+        <div class="stat"><div class="num">{{ authres.ar_count }}</div><div class="label">Authentication-Results 字段</div></div>
+        <div class="stat"><div class="num {% if authres.own_count %}ok{% else %}error{% endif %}">{{ authres.own_count }}</div><div class="label">本组织声明</div></div>
+      </div>
+
+      <div class="banner trust-msg {% if authres.own_count %}trust-ok{% else %}trust-bad{% endif %}">{{ authres.message }}</div>
+
+      {% if authres.no_org_claims %}
+      <div class="banner">🚫 无本组织声明：
+        {%- if authres.no_org_reason == 'no_trusted_prefix' %}无法建立自顶端连续可信前缀，任何 Authentication-Results 都不能归属本组织。
+        {%- elif authres.no_org_reason == 'no_auth_results' %}头部中没有 Authentication-Results 字段。
+        {%- else %}所有 Authentication-Results 字段均未能归属本组织可信前缀内的接收跳（逐条原因见下）。
+        {%- endif %}
+      </div>
+      {% else %}
+      <div class="card">
+        <h2>✅ 本组织声明的认证结果（按原文顺序，保留重复声明）</h2>
+        <div>
+          {% for item in authres.auth_summary %}
+          <span class="hchip {% if item.result.lower() == 'pass' %}match{% elif item.result.lower() == 'fail' %}miss{% else %}caution{% endif %}"
+            title="来自第 {{ item.field_index }} 条 Authentication-Results（归属头部第 {{ item.hop_top_index }} 跳）">{{ item.method }}={{ item.result or '（空）' }}</span>
+          {% endfor %}
+        </div>
+        <p class="hint" style="margin:8px 0 0;">仅汇总判定为本组织声明的字段；同一方法多次出现（多条签名 / 多个字段）按原文顺序逐条保留，不去重。</p>
+      </div>
+      {% endif %}
+
+      {% if authres.results %}
+      <div class="trust-list">
+        {% for r in authres.results %}
+        <div class="trust-row {% if r.status == 'own' %}trusted{% elif r.status == 'beyond_boundary' %}boundary{% else %}outside{% endif %}">
+          <div class="hop-head">
+            <span class="trust-idx">第 {{ r.index }} 条</span>
+            {% if r.status == 'own' %}
+              <span class="trust-badge t-ok">✓ 本组织声明</span>
+            {% elif r.status == 'no_hop' %}
+              <span class="trust-badge t-out">✗ 无对应跳</span>
+            {% elif r.status == 'beyond_boundary' %}
+              <span class="trust-badge t-boundary">⛔ 越过边界</span>
+            {% else %}
+              <span class="trust-badge t-reentry">⚠ 身份不符</span>
+            {% endif %}
+            <span class="hint">头部第 {{ r.field_position }} 个字段</span>
+          </div>
+          <div class="hop-grid">
+            <div><span class="k">authserv-id</span>
+              {% if r.authserv_id %}<code>{{ r.authserv_id }}</code>
+              {% else %}<span class="time-bad">缺失 / none</span>{% endif %}
+            </div>
+            <div><span class="k">对应 Received</span>
+              {% if r.hop_top_index %}头部自上而下第 {{ r.hop_top_index }} 跳{% else %}—{% endif %}
+            </div>
+            <div><span class="k">该跳 by</span>{{ r.hop_by_host or '—' }}</div>
+          </div>
+          <p class="hint" style="margin:6px 0 0;">{{ r.detail }}</p>
+          {% if r.methods %}
+          <div style="margin-top:8px;">
+            {% for m in r.methods %}
+            <span class="hchip {% if m.result.lower() == 'pass' %}match{% elif m.result.lower() == 'fail' %}miss{% else %}caution{% endif %}">{{ m.method }}={{ m.result or '（空）' }}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+          <details>
+            <summary>查看原始 Authentication-Results 字段（保留折行）</summary>
+            <pre class="raw">{{ r.raw }}</pre>
+          </details>
+        </div>
+        {% endfor %}
+      </div>
+      <p class="legend">
+        归属口径：每条 <code>Authentication-Results</code> 归属到其后紧邻的
+        <code>Received</code>（向下第一条，两者之间不得有另一条 <code>Received</code>）；
+        仅当该跳属于自顶端连续可信前缀、且 <code>authserv-id</code> 与该跳
+        <code>by</code> 主机一致（忽略大小写与末尾点）时标为本组织声明。
+        无对应跳 = 其后没有任何 <code>Received</code>；越过边界 = 对应跳不在
+        连续可信前缀内；身份不符 = 对应跳可信但 authserv-id 与 by 主机不一致。
+      </p>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+
   {% if batch %}
     {% if batch.error %}
       <div class="banner">{{ batch.error }}</div>
@@ -1013,6 +1131,18 @@
     taTrust.value = '';
     taHosts.value = '';
     taTrust.focus();
+  });
+
+  const taAuthres = document.getElementById('headers_authres');
+  const taHostsAuthres = document.getElementById('trusted_hosts_authres');
+  document.getElementById('fillAuthresSample').addEventListener('click', () => {
+    taAuthres.value = {{ sample_authres | tojson }};
+    taHostsAuthres.value = {{ sample_trusted_hosts | tojson }};
+  });
+  document.getElementById('clearAuthres').addEventListener('click', () => {
+    taAuthres.value = '';
+    taHostsAuthres.value = '';
+    taAuthres.focus();
   });
 
   // 单封邮件脱敏分享：POST 当前“头部 A”到 /api/analyze/share，

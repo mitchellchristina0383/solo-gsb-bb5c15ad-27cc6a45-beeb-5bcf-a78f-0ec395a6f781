@@ -54,6 +54,18 @@
   忽略大小写与末尾点；空名单返回 400 输入错误；顶端未命中或没有
   `Received` 字段时分别以 `untrusted_top` / `no_received` 状态明确提示
   **无法建立可信链**。
+- **认证结果来源（Authentication-Results 归属）**：在页面
+  **“认证结果来源”** 区域粘贴原始头部并填写本组织接收服务器名单，或调用
+  `POST /api/analyze/auth-results`（`headers` 字符串 + `trusted_hosts`
+  字符串数组）。系统复用折行展开与可信边界分析，把每条
+  `Authentication-Results` 归属到其后**紧邻的 `Received`**（两者之间不得有
+  另一条 `Received`）：仅当该跳属于**自顶端连续可信前缀**、且
+  `authserv-id` 与该跳 `by` 主机一致（忽略大小写与末尾点）时，才标为
+  **本组织声明**；其余逐条标明**无对应跳**（其后没有任何 `Received`）、
+  **越过边界**（对应跳不在连续可信前缀内）或**身份不符**（对应跳可信但
+  authserv-id 与 by 主机不一致）。对本组织声明提取 `spf` / `dkim` /
+  `dmarc` 的结果词，按原文顺序展示并**保留重复声明**；没有可信前缀
+  （或没有任何字段归属本组织）时明确显示**无本组织声明**。
 
 解析核心（`mailtrace/`）仅依赖 Python 标准库，可脱离 Flask 单独使用或被其他程序导入。
 
@@ -93,10 +105,11 @@ docker build -t mailtrace . && docker run --rm -p 8000:8000 mailtrace
 
 | 用途 | 地址（默认 `http://localhost:8000`） |
 | --- | --- |
-| 页面（投递路径 / 对照 / 慢段归因 / ARC / DKIM 覆盖 / 可信边界） | `http://localhost:8000/` |
+| 页面（投递路径 / 对照 / 慢段归因 / ARC / DKIM 覆盖 / 可信边界 / 认证结果来源） | `http://localhost:8000/` |
 | 单份头部分析 | `POST http://localhost:8000/api/analyze` |
 | 脱敏分享报告 | `POST http://localhost:8000/api/analyze/share` |
 | **接收链可信边界** | `POST http://localhost:8000/api/analyze/trust-boundary` |
+| **认证结果来源** | `POST http://localhost:8000/api/analyze/auth-results` |
 | 双邮件头路径对照 | `POST http://localhost:8000/api/compare` |
 | 多封慢段归因 | `POST http://localhost:8000/api/batch-delays` |
 | ARC 链结构检查 | `POST http://localhost:8000/api/arc/check` |
@@ -139,6 +152,14 @@ docker build -t mailtrace . && docker run --rm -p 8000:8000 mailtrace
    并以单独卡片展示**外部交接点**（最后可信跳的 `from` 主机与对端 IP）。
    顶端第一跳就未命中或缺少 `by`、以及头部完全没有 `Received` 时，
    页面会明确提示**无法建立可信链**（而不是误判为全部可信）。
+9. 需要确认 **Authentication-Results 是否来自本组织**时，在
+   **“🛡️ 认证结果来源”** 区域粘贴单封邮件原始头部并填写本组织接收服务器
+   名单（可点“填入示例”，含身份不符、越过边界、无对应跳等各类样例），
+   点击 **分析认证结果来源**：页面逐条展示每条 `Authentication-Results`
+   归属的接收跳与判定（✓ 本组织声明 / ⛔ 越过边界 / ⚠ 身份不符 /
+   ✗ 无对应跳），并以结果词卡片汇总本组织声明的 `spf` / `dkim` /
+   `dmarc`（按原文顺序、保留重复声明）；无法建立可信前缀时明确显示
+   **无本组织声明**。
 
 慢段归因的聚合口径：
 
@@ -478,6 +499,73 @@ curl -s -X POST http://localhost:8000/api/analyze/trust-boundary \
   - `trusted_hosts` 为空名单、类型错误、`headers` 非字符串或空白、
     超过 `MAX_INPUT_KB` 上限时返回 **400** 及 `error` 说明。
 
+认证结果来源（本地启动后地址为
+`http://localhost:8000/api/analyze/auth-results`，端口随 `HOST_PORT`
+变化，见下文“访问端口”）：
+
+```bash
+curl -s -X POST http://localhost:8000/api/analyze/auth-results \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "headers": "Authentication-Results: edge.internal.corp; spf=pass smtp.mailfrom=x.example; dkim=pass header.d=x.example; dmarc=pass header.from=x.example\nReceived: from gw2 ... by edge.internal.corp; ...\nReceived: from ext ... by gw2.internal.corp; ...",
+        "trusted_hosts": ["edge.internal.corp", "gw2.internal.corp"]
+      }'
+```
+
+输入与 `/api/analyze/trust-boundary` 相同（`trusted_hosts` 支持字符串数组
+或每行一个主机名的字符串）。返回结构与页面共用同一结果：
+
+```json
+{
+  "status": "established",
+  "status_label": "可信链已建立",
+  "message": "共 2 条 Authentication-Results 字段，其中 1 条归属本组织……",
+  "trusted_hosts": ["edge.internal.corp", "gw2.internal.corp"],
+  "hop_count": 3,
+  "trusted_count": 2,
+  "boundary": {"top_index": 3, "by_host": "relay.external", "...": "..."},
+  "ar_count": 2,
+  "own_count": 1,
+  "no_org_claims": false,
+  "no_org_reason": null,
+  "auth_summary": [
+    {"method": "spf", "result": "pass", "field_index": 1, "hop_top_index": 1},
+    {"method": "dkim", "result": "pass", "field_index": 1, "hop_top_index": 1},
+    {"method": "dmarc", "result": "pass", "field_index": 1, "hop_top_index": 1}
+  ],
+  "results": [
+    {"index": 1, "field_position": 1, "authserv_id": "edge.internal.corp",
+     "status": "own", "status_label": "本组织声明",
+     "hop_top_index": 1, "hop_by_host": "edge.internal.corp",
+     "methods": [{"method": "spf", "result": "pass"}, "..."],
+     "detail": "……", "raw": "Authentication-Results: ..."},
+    {"index": 2, "authserv_id": "relay.external",
+     "status": "beyond_boundary", "status_label": "越过边界",
+     "hop_top_index": 3, "hop_by_host": "relay.external",
+     "methods": [], "...": "..."}
+  ]
+}
+```
+
+- 归属口径：每条 `Authentication-Results` 归属到其后**紧邻的
+  `Received`**（沿头部向下第一条，两者之间不得有另一条 `Received`）；
+  仅当该跳属于自顶端连续可信前缀、且 `authserv-id` 与该跳 `by` 主机一致
+  （忽略大小写与末尾点）时 `status` 为 `own`（本组织声明）。其余取值：
+  `no_hop`（无对应跳：其后没有任何 `Received`）、`beyond_boundary`
+  （越过边界：对应跳不在连续可信前缀内，含边界之后 by 再次命中名单的
+  伪造跳）、`identity_mismatch`（身份不符：对应跳可信但 authserv-id
+  缺失 / 为 `none` / 与 by 主机不一致）。
+- `auth_summary` 汇总所有本组织声明中的 `spf` / `dkim` / `dmarc` 结果词，
+  **按原文顺序、保留重复声明**（同一方法出现多次不去重）；
+  `field_index` 指回第几条 AR 字段。非本组织声明的字段不提取、不汇总。
+- `no_org_claims=true` 时页面与 JSON 明确表示**无本组织声明**，原因见
+  `no_org_reason`：`no_trusted_prefix`（无法建立连续可信前缀）、
+  `no_auth_results`（头部没有 Authentication-Results 字段）、
+  `none_attributed`（有字段但无一归属本组织）。
+- 状态码约定与可信边界一致：`status` 复用 `established` /
+  `untrusted_top` / `no_received`（均为 200）；空名单、类型错误、
+  空白头部或超过 `MAX_INPUT_KB` 上限返回 **400** 及 `error` 说明。
+
 健康检查：`GET http://localhost:8000/healthz`。
 
 ---
@@ -559,20 +647,22 @@ python -m unittest discover -s tests -v
 │       ├── arc.py          # ARC 链结构检查：i 标签归组、字段齐全性、连续编号、cv 校验
 │       ├── dkim.py         # DKIM h= 头字段覆盖审计：逐条签名、自底部向上匹配、重复字段不合并
 │       ├── trust.py        # 接收链可信边界：自顶端连续 by 命中、边界位置、外部交接点
-│       └── sample.py       # 页面“填入示例”数据（A / B、批量三份、ARC、DKIM 及可信边界示例）
+│       ├── authres.py      # 认证结果来源：AR 归属紧邻 Received、可信前缀 + authserv-id 判定
+│       └── sample.py       # 页面“填入示例”数据（A / B、批量三份、ARC、DKIM、可信边界及认证结果来源示例）
 ├── wsgi.py                 # gunicorn / flask 启动入口
 ├── entrypoint.sh           # 容器启动时安装依赖并启动 gunicorn
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-└── tests/                  # 解析核心、对照、脱敏、慢段归因、ARC 链、DKIM 覆盖与可信边界单元测试
+└── tests/                  # 解析核心、对照、脱敏、慢段归因、ARC 链、DKIM 覆盖、可信边界与认证结果来源单元测试
     ├── test_parser.py
     ├── test_compare.py
     ├── test_share.py
     ├── test_batch.py
     ├── test_arc.py
     ├── test_dkim.py
-    └── test_trust.py
+    ├── test_trust.py
+    └── test_authres.py
 ```
 
 ## 安全与隐私

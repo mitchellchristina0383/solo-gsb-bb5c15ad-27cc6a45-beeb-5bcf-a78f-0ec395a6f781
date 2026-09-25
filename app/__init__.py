@@ -7,6 +7,7 @@ import os
 from flask import Flask, jsonify, render_template, request
 
 from mailtrace.parsing import (
+    analyze_auth_results,
     analyze_headers,
     analyze_trust_boundary,
     audit_dkim_coverage,
@@ -19,6 +20,7 @@ from mailtrace.parsing import (
 from mailtrace.parsing.sample import (
     SAMPLE_HEADERS,
     SAMPLE_HEADERS_ARC,
+    SAMPLE_HEADERS_AUTHRES,
     SAMPLE_HEADERS_B,
     SAMPLE_HEADERS_BATCH,
     SAMPLE_HEADERS_DKIM,
@@ -53,6 +55,7 @@ def create_app() -> Flask:
             "sample_dkim": SAMPLE_HEADERS_DKIM,
             "sample_trust": SAMPLE_HEADERS_TRUST,
             "sample_trusted_hosts": SAMPLE_TRUSTED_HOSTS,
+            "sample_authres": SAMPLE_HEADERS_AUTHRES,
             "max_input_kb": max_input_kb,
         }
         context.update(extra)
@@ -140,6 +143,17 @@ def create_app() -> Flask:
             }
         return analyze_trust_boundary(raw_headers, trusted_hosts)
 
+    def _do_auth_results(raw_headers: str, trusted_hosts) -> dict:
+        error = _check_size(raw_headers)
+        if error:
+            return {"error": error}
+        if not raw_headers.strip():
+            return {
+                "error": "请先粘贴邮件原始头部"
+                "（包含 Authentication-Results 与 Received 字段）"
+            }
+        return analyze_auth_results(raw_headers, trusted_hosts)
+
     @app.post("/analyze")
     def analyze_form():
         raw_headers = request.form.get("headers_a", "") or request.form.get("headers", "")
@@ -203,6 +217,17 @@ def create_app() -> Flask:
             headers_trust=raw_headers,
             trusted_hosts_text=trusted_hosts,
             trust=trust,
+        )
+
+    @app.post("/auth-results")
+    def auth_results_form():
+        raw_headers = request.form.get("headers_authres", "")
+        trusted_hosts = request.form.get("trusted_hosts_authres", "")
+        authres = _do_auth_results(raw_headers, trusted_hosts)
+        return render_index(
+            headers_authres=raw_headers,
+            trusted_hosts_authres_text=trusted_hosts,
+            authres=authres,
         )
 
     @app.post("/api/analyze")
@@ -318,6 +343,34 @@ def create_app() -> Flask:
                 {"error": "trusted_hosts 必须是主机名字符串数组，或每行一个主机名的字符串"}
             ), 400
         result = _do_trust_boundary(raw_headers, trusted_hosts)
+        # 空名单、空白头部等输入错误为 400；no_received / untrusted_top 为 200
+        status = 400 if result.get("error") else 200
+        return jsonify(result), status
+
+    @app.post("/api/analyze/auth-results")
+    def auth_results_api():
+        if request.is_json:
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify(
+                    {"error": "请求体必须是 JSON 对象，含 headers 与 trusted_hosts"}
+                ), 400
+            raw_headers = payload.get("headers", "")
+            trusted_hosts = payload.get("trusted_hosts", [])
+        else:
+            raw_headers = request.form.get("headers", "")
+            # 表单只支持每行一个主机名的文本（也兼容逗号 / 空白分隔）
+            trusted_hosts = request.form.get("trusted_hosts", "")
+        if not isinstance(raw_headers, str):
+            return jsonify({"error": "headers 必须是字符串"}), 400
+        if not isinstance(trusted_hosts, (str, list, tuple)) or (
+            isinstance(trusted_hosts, list)
+            and not all(isinstance(item, str) for item in trusted_hosts)
+        ):
+            return jsonify(
+                {"error": "trusted_hosts 必须是主机名字符串数组，或每行一个主机名的字符串"}
+            ), 400
+        result = _do_auth_results(raw_headers, trusted_hosts)
         # 空名单、空白头部等输入错误为 400；no_received / untrusted_top 为 200
         status = 400 if result.get("error") else 200
         return jsonify(result), status
